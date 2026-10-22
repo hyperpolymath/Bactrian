@@ -1,0 +1,292 @@
+// SPDX-License-Identifier: CC-BY-SA-4.0
+// Copyright (c) 2026 Jonathan D.A. Jewell (hyperpolymath)
+= Bactrian Implementation Plan
+:toc:
+:toclevels: 3
+
+== Purpose
+
+This plan translates link:BACTRIAN-VERIFICATION-SPEC.adoc[the architecture and
+soundness contract] into an orderable implementation backlog. The goal is not to
+make an attractive `dune build @verify` alias that runs partial checks. The goal
+is an end-to-end vertical slice whose final status cannot be confused with
+preflight, testing, bounded evidence, or an incomplete warrant. For the
+agent/maintainer handoff and individually actionable work packages, see the
+link:../status/BACTRIAN-ULTRAPLAN.adoc[Bactrian Ultra-Plan].
+
+== Repository reconnaissance and current state
+
+The checkout currently has no OCaml compiler, Dune, Why3, Apalache, Idris2, Zig,
+Dedukti, Coq, Lean, or selected ECHIDNA command on `PATH`. It has template
+Idris2/Zig ABI examples, but no Bactrian PPX, IR, Dune project, frontend,
+proof-engine adapter, or authority pins. The canonical proof repositories and
+artifact hashes have not been locally established in this worktree. Therefore
+no proof-producing implementation can presently be compiled or tested here.
+
+The first executable contribution is deliberately modest and truthful:
+`scripts/bactrian/doctor.sh` inventories tool and integration readiness, checks
+the authority lock shape, and exits blocked until implementation exists. It
+never parses OCaml or reports proof. `tests/bactrian/doctor_test.sh` tests that
+contract. `.machine_readable/bactrian/authorities.lock` records upstream
+identities as `UNPINNED`; these values must be replaced only after inspecting
+the canonical source/artifacts and recording their real revisions and SHA-256
+digests. Do not infer a pin from a package name or a current branch head.
+
+=== First execution on a provisioned developer machine
+
+[source,sh]
+----
+bash tests/bactrian/doctor_test.sh
+scripts/bactrian/doctor.sh
+----
+
+The first command should pass. The second is expected to exit `2` with this
+checkout's current blockers. To reach “preflight READY”, install and pin the
+required toolchain, select the ECHIDNA adapter, approve real authority pins, and
+implement the named Dune modules. Even then the doctor is only a readiness
+check; only the full proof pipeline may issue proof status.
+
+== Target source tree
+
+Add components in this dependency order; do not start by wiring a broad CI
+matrix around empty modules.
+
+[source,text]
+----
+src/
+  ppx/                 compiler-libs PPX, source maps, post-expansion firewall
+  core/                versioned Core Spec IR and canonical serialization
+  frontend/            typed AST -> Core Spec IR; subset and totality checks
+  why3/                 IR -> Why3 tasks, proof/certificate adapter
+  actors/               protocol model, K-CUT and Apalache adapters
+  abi/                  OCaml binding manifest, Idris2/QTT and ZigProve import
+  driver/               Dune-facing CLI, statuses, cache keys and proof bundles
+config/bactrian/        profile, runtime/backend target, trust policy
+fixtures/
+  accepted/              small positive examples, one feature per fixture
+  rejected/              unsupported syntax and soundness counterexamples
+  mutation/              expected killed mutants for vacuity/sensitivity checks
+tests/bactrian/          unit, golden, integration, and fail-closed tests
+----
+
+Suggested modules are deliberately narrow:
+
+* `core/ir.ml`: typed IR data model, version, stable serialization, source map.
+* `ppx/firewall.ml`: expansion provenance and rejection of unsupported AST
+  forms; no source-text grep used as a soundness boundary.
+* `frontend/typed_ast.ml`: compiler-version-specific AST adapter, name
+  resolution, local call graph, capability and totality obligations.
+* `why3/translate.ml`: only the approved pure fragment and explicit machine
+  integer semantics; unsupported nodes are errors.
+* `actors/protocol.ml`: process transition model, queue HWM, links, monitors,
+  transport fault assumptions, and causal-reply check.
+* `abi/manifest.ml`: binding signature/layout/ownership/source hashes and
+  target-runtime identity.
+* `driver/status.ml`: typed state (`Preflight`, `Tested`, `Bounded`,
+  `Incomplete`, `Complete`, `Failed`); no implicit conversion to `Complete`.
+
+Compiler-libs node matching is isolated in `ppx/` and `frontend/`, allowing
+compiler upgrades to be reviewed as semantic changes. Do not expose raw
+`Parsetree` outside those modules.
+
+== Sequenced delivery plan
+
+=== Milestone 0 — Pin inputs and provision the build
+
+* Choose the first supported target explicitly: an OCaml native program
+  interacting with a named BEAM node/runtime adapter, or a specific
+  OCaml-on-BEAM runtime. “BEAM compatible” is not a target specification.
+* Identify canonical Agda source repositories, theorem/module names, exact
+  commits, generated artifact paths, licenses, and artifact digests. Get these
+  from their owners/canonical map; do not guess repository URLs or commits.
+* Identify the ECHIDNA invocation/API and the actual formats for strict
+  Dedukti witnesses, INCOMPLETE Warrant, batch Coq/Lean requests, and COMPLETE
+  Receipt. Make a tiny adapter contract test with a deliberately invalid
+  witness and a stale digest.
+* Pin OCaml, Dune, Why3, SMT backend, Apalache, Idris2, Zig/ZigProve,
+  Dedukti, Coq, Lean, and runtime headers/toolchain in the repository's
+  reproducible provisioning mechanism. Record target triple and flags.
+* Populate `authorities.lock` only after each pin's provenance has been
+  independently checked. The doctor must pass its pin-format checks, and a
+  separate lock test must detect missing, duplicate, stale, and altered rows.
+
+*Acceptance:* reproducible provisioning identifies exact versions; a clean
+checkout can run the doctor; authority adapter rejects a modified artifact;
+no source-verification status is emitted yet.
+
+=== Milestone 1 — Dune skeleton and fail-closed command model
+
+* Add `dune-project`, pinned opam package metadata, executable/library stanzas,
+  and a `bactrian` driver command with `doctor`, `check-ast`, and eventually
+  `verify` subcommands.
+* Define textual statuses and stable exit codes. `doctor` may succeed for
+  readiness; `check-ast` may report syntactic acceptance; neither writes a
+  proof receipt. `verify` must fail until each mandatory obligation has a
+  checked witness and ECHIDNA COMPLETE Receipt.
+* Establish `dune build @verify` as the single release-facing gate. It invokes
+  only locked, declared dependencies and exits nonzero for missing tools,
+  missing proof adapters, timeouts, unknown syntax, unproved VCs, or incomplete
+  receipts. Add a separate `@preflight` alias so partial success cannot be
+  mistaken for verification.
+* Add deterministic build IDs from source hashes, compiler and PPX versions,
+  tool flags, IR schema, imported authority digests, target ABI and model
+  bounds. Initially disable proof caching until cache-key tests pass.
+
+*Acceptance:* clean build emits “blocked/incomplete” rather than success when
+an engine is absent; stale artifacts cannot satisfy `@verify`; repeat runs
+produce the same preflight report.
+
+=== Milestone 2 — Layer A smallest useful proof
+
+Implement an end-to-end accepted fragment in this order:
+
+. One monomorphic ADT, integer constants, constructors, exhaustive match, and
+  immutable records.
+. Non-recursive pure `let` and local pure functions, with a resolved local
+  call graph. Reject unknown or external calls by default.
+. `[@pre]` / `[@post]` parsing and a clearly versioned logic expression
+  language; contracts are not arbitrary OCaml evaluation.
+. A small arithmetic semantics (start with mathematical integers; introduce
+  fixed-width arithmetic only with explicit overflow rules).
+. Structural recursion plus a termination obligation; reject general
+  recursion until a well-founded-measure path is implemented.
+. Why3 VC generation, solver execution, independently checked certificate or
+  proof reconstruction, and strict Dedukti witness production/checking.
+
+Every accepted fixture must have a corresponding rejected mutant. Cover
+`Obj.magic`, `Unsafe_*`, aliased `Sys.command`, unknown PPX expansion, an
+external declaration, hidden mutation, incomplete match, unsupported call,
+recursive non-decrease, and contract vacuity. The typed-AST pass resolves
+module aliases and opens; source grep is defense-in-depth only.
+
+*Acceptance:* one small function reaches ECHIDNA with a source-mapped VC and
+checked receipt; mutating its postcondition makes the gate fail. Do not broaden
+the subset until each existing fixture remains stable across a compiler pin.
+
+=== Milestone 3 — Capability and TINI integration
+
+* Map Core IR capability sets to MPR Sigma and reject authority by default.
+* Map secret labels and observable outputs to `secret-types` TINI obligations.
+* Invoke R5 composition on module and whole-program summaries, not only each
+  function in isolation.
+* Transport evidence through `echo-types` / `epistemic-types` certificates,
+  validating exact theorem, assumptions, and hash provenance.
+
+*Acceptance:* a direct forbidden capability and an `fs.read` + `net.send`
+composition are rejected; a permitted pure module is accepted; manifest drift
+invalidates all derived artifacts.
+
+=== Milestone 4 — Layer B protocol vertical slice
+
+Start with exactly two roles, one request type, one correlated reply, a bounded
+mailbox, and crash points around receive/commit/reply. Then:
+
+* Elaborate the concrete choreography syntax to transitions, including
+  selective receive and in-flight messages.
+* Import `occupancy-types` HWM bounds and reject a capacity claim with no
+  arrival/service assumptions or overflow policy.
+* Call the canonical K-CUT loss/knowledge interfaces and preserve their loss
+  residue and assumptions in the proof bundle.
+* Run Apalache for bounded counterexample search with explicit bounds and
+  bounded-only status. Prove any promoted theorem via a checked abstraction or
+  inductive invariant; never promote BMC by itself.
+* Add the killer test: commit happens, reply is lost; sender does not know
+  commit. Removing the reply must make the elaborator reject any
+  `remote_committed` assertion regardless of whether bounded search finds a
+  counterexample.
+
+*Acceptance:* correlated causal reply is the only transition that establishes
+acknowledged commitment; lost reply leaves sender uncertain; HWM overflow and
+crash traces are reported; loss/reordering assumptions are explicit.
+
+=== Milestone 5 — Layer C one primitive
+
+* Pick one pure deterministic Zig primitive whose input size has a finite
+  explicit bound. Define Idris2 QTT input/output, integer range, ownership,
+  error and linear-resource protocol.
+* Generate the OCaml declaration and C header from the manifest; handwritten
+  `external` declarations remain rejected.
+* Pin the runtime version and implement a wrapper that uses its actual GC root,
+  custom block, exception, and callback APIs. Do not assume
+  `caml_reserve_custom` is a public portable API; prove the selected adapter.
+* Use ZigProve to link the exact implementation hash to the Idris2 signature
+  and postcondition. Test ABI layout, null/error handling, allocation failure,
+  finalization, double release, and exception/unwind paths.
+* Prove MaxPlus cost with input-size and wrapper costs. Establish a sound
+  target-specific conversion to the scheduler's 1 ms budget. If not established,
+  disable scheduler-thread invocation and exercise the worker/nonblocking
+  path instead.
+
+*Acceptance:* mutation of symbol, signature, layout, ownership, source hash, or
+cost bound is rejected; all GC and error paths are covered; no wall-clock
+benchmark is treated as a WCET proof.
+
+=== Milestone 6 — Full proof transport and release gate
+
+* Define ECHIDNA adapter input/output schemas and bind every obligation to the
+  canonical IR hash and assumption set.
+* Run ECHIDNA strict Dedukti validation followed by batch Coq + Lean checks.
+* Validate INCOMPLETE Warrant versus COMPLETE Receipt state transitions and
+  receipt issuer/signature/checker identity. Invalid, stale, missing, or
+  mismatched receipts are rejected.
+* Run `mutation.rs` for antecedent satisfiability, postcondition sensitivity,
+  causal-reply deletion, and ABI tampering. Mutation testing supplements—not
+  replaces—proof checking.
+* Enable deterministic caches only after adversarial cache-key tests.
+  Release CI requires COMPLETE for all mandatory proof obligations; local
+  bounded or partial profile remains explicitly non-release.
+
+*Acceptance:* clean reproducible build reaches `dune build @verify`, produces a
+COMPLETE receipt bound to source/toolchain/authority hashes, kills all required
+mutations, and fails on any single missing checker or changed byte.
+
+== Implementation rules and decision log
+
+. **No fake green:** tool availability, parser acceptance, unit tests, SMT
+  `unsat`, bounded model checking, and a local Warrant are distinct statuses;
+  none alone means COMPLETE.
+. **No fabricated upstream identity:** this branch records upstream authorities
+  by names supplied in the design, but not their repository locations,
+  revisions, theorem signatures, or hashes until those are verified.
+. **No source grep as AST security:** the OCaml compiler frontend and expanded
+  typed AST define the input to the firewall. A text scanner may add warnings,
+  never admit code.
+. **No runtime-general claim:** proofs name one compiler/runtime/target triple
+  at a time. Every upgrade re-runs ABI and semantic conformance suites.
+. **No silent downgrade:** unsupported AST, missing assumptions, failed proof
+  reconstruction, bounded-only protocol evidence, or missing mutation tool
+  prevents COMPLETE.
+. **One vertical slice first:** get a tiny sequential proof through full
+  receipt closure before implementing the distributed and ABI layers in
+  parallel. Keep the cross-layer interfaces versioned from the outset.
+
+== Immediate backlog
+
+[cols="1,3,2",options="header"]
+|===
+| Order | Work item | Done when
+
+| 1
+| Run and refine `bash tests/bactrian/doctor_test.sh`; confirm blocked output is
+  accurate on a provisioned maintainer host.
+| Test passes and never calls a blocked checkout “verified”.
+
+| 2
+| Owner/maintainer identifies canonical source locations and selects the first
+  OCaml/BEAM target and ECHIDNA adapter contract.
+| Exact identities and interfaces can be recorded without guessing.
+
+| 3
+| Pin/install the compiler and Dune toolchain; create the Dune skeleton and
+  test `@preflight`/fail-closed `@verify` behavior.
+| Reproducible build succeeds; `@verify` fails honestly before engine wiring.
+
+| 4
+| Implement compiler-libs firewall plus positive/negative AST fixtures.
+| Aliases and expansion are checked; no text-only admission path exists.
+
+| 5
+| Deliver a tiny Layer A end-to-end proof and mutation campaign.
+| Source -> IR -> VC -> `.dk` -> ECHIDNA COMPLETE succeeds on one fixture.
+
+|===

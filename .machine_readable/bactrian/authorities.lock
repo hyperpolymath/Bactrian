@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MPL-2.0
+# Bactrian canonical authority lock, schema 1.
+# TSV columns: authority<TAB>source-revision<TAB>canonical-artifact-sha256
+# UNPINNED is deliberate until the canonical source/artifact is checked and approved.
+# Never replace an unknown revision or digest with a guessed value.
+MPR	UNPINNED	UNPINNED
+choreographic-types	UNPINNED	UNPINNED
+secret-types	UNPINNED	UNPINNED
+echo-types	UNPINNED	UNPINNED
+epistemic-types	UNPINNED	UNPINNED
+occupancy-types	UNPINNED	UNPINNED
+tropical-types	UNPINNED	UNPINNED
+ECHIDNA	UNPINNED	UNPINNED
