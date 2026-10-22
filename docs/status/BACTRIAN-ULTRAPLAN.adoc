@@ -28,6 +28,54 @@ Apalache/ECHIDNA adapter, or target-specific runtime proof. The canonical
 authority rows remain `UNPINNED`. Those are real blockers, not paperwork to
 edit away. Nothing in this plan certifies program verification.
 
+The repository also still contains the RSR template identity and many
+unfilled project placeholders (`README.adoc` and the root deed are examples).
+It must be decided whether this repository is intentionally serving as a
+customized template or is to become the Bactrian product repository. Do not
+mass-substitute template tokens, rename the deed, or remove template assets
+until that boundary is confirmed by the maintainer.
+
+=== Baseline hazards found in the first PR validation (2026-10-22)
+
+The first hosted validation run exposed failures beyond the local preflight
+suite. Treat them as open baseline work; merging or opening a PR does not turn a
+failed check green.
+
+[cols="2,2,3",options="header"]
+|===
+| Check | Observed failure | Next action / evidence
+
+| OpenSSF Compliance — no unfilled placeholder tokens
+| `scripts/check-no-placeholders.sh .` reports 89 files with template tokens.
+| Re-run on the base commit and this branch; confirm whether the repo is meant
+to be instantiated. Preserve intentional archetype/template carriers and only
+resolve product files after owner direction. The newly added Bactrian docs and
+preflight files contain no `{{UPPER_SNAKE}}` tokens.
+
+| Canon lockstep
+| `Compare this repo's declared pin` failed.
+| Inspect the exact canonical pin source and compare base vs branch. Do not
+replace a pin until the authoritative revision/artifact is verified.
+
+| RSR oracle — dogfood this repo
+| `Compile the oracle` failed.
+| Recover the job log, identify the failing compiler/input, and reproduce it on
+the base commit before attributing it to Bactrian changes.
+
+| Estate audit
+| `Required Files Gate` failed.
+| Recover the detailed audit report and compare required files against the
+repo's declared identity and intended template/product role.
+|===
+
+The available check-run metadata identifies the failing steps but the job-log
+archive was unavailable to the workspace during this run. The recorded job
+references are link:https://github.com/hyperpolymath/Bactrian/actions/runs/39815613568/job/119953305648[Canon lockstep],
+link:https://github.com/hyperpolymath/Bactrian/actions/runs/39815613568/job/119953305493[RSR oracle],
+link:https://github.com/hyperpolymath/Bactrian/actions/runs/39815613363/job/119953304259[estate audit],
+and link:https://github.com/hyperpolymath/Bactrian/actions/runs/39815612574/job/119953301356[OpenSSF placeholder check].
+Run IDs are historical evidence, not a guarantee these checks are still failing.
+
 == Operating rules for every contributor
 
 === Start-of-task checklist
@@ -108,16 +156,17 @@ merged implementation without that receipt remains unproved.
 
 [source,text]
 ----
-WP-00 Target + trust inventory
-  -> WP-01 pinned toolchain + canonical artifacts + ECHIDNA contract
-    -> WP-02 Dune skeleton + typed status machine
-      -> WP-03 stable Core Spec IR
-        -> WP-04 AST gate + frontend + source maps
-          -> WP-05 contracts + termination + Why3 + Dedukti + first ECHIDNA receipt
-            -> WP-06 MPR capabilities + TINI/R5
-            -> WP-07 actor protocol + occupancy + K-CUT + Apalache
-            -> WP-08 ABI manifest + Idris2/ZigProve + runtime adapter
-              -> WP-09 cross-layer mutation + final receipt/release profile
+WP-00A Repository identity + CI baseline
+  -> WP-00 Target + trust inventory
+    -> WP-01 pinned toolchain + canonical artifacts + ECHIDNA contract
+      -> WP-02 Dune skeleton + typed status machine
+        -> WP-03 stable Core Spec IR
+          -> WP-04 AST gate + frontend + source maps
+            -> WP-05 contracts + termination + Why3 + Dedukti + first ECHIDNA receipt
+              -> WP-06 MPR capabilities + TINI/R5
+              -> WP-07 actor protocol + occupancy + K-CUT + Apalache
+              -> WP-08 ABI manifest + Idris2/ZigProve + runtime adapter
+                -> WP-09 cross-layer mutation + final receipt/release profile
 ----
 
 WP-06 through WP-08 may proceed in parallel only after WP-03 IR, WP-05's
@@ -170,6 +219,45 @@ identity, assumptions, and every input hash.
 Each package below is intended to become one small, reviewable PR or a bounded
 set of coordinated PRs. Do not start a downstream package by fabricating its
 upstream prerequisites.
+
+=== WP-00A — Reconcile repository identity and CI baseline
+
+*Priority:* P0; do this before product initialization, canonical pin edits, or
+changes intended to make the failed hosted gates green.
+
+*Tasks:*
+
+. Ask the maintainer whether `hyperpolymath/Bactrian` is intentionally an
+  uninitialized RSR template, a Bactrian product repository, or a transition
+  repository with both roles. Record the decision and what files/assets must
+  remain as templates.
+. Re-run the failing CI checks on the current base and compare their inputs
+  with the branch's changed files. Retrieve the job logs where available; the
+  previous workspace could read check metadata but could not fetch the log
+  archives.
+. Triage Canon lockstep, RSR oracle compilation, estate-audit Required Files,
+  and OpenSSF placeholder failures independently. Distinguish a repository
+  baseline failure from a regression in changed files.
+. For the 89 placeholder-bearing files, classify each as (a) intentional
+  template/archetype input, (b) shipped project file requiring initialization,
+  or (c) an invalid leftover. Apply only the correct canonical disposition;
+  do not blanket-replace tokens or weaken the checker.
+. Preserve green controls: secret scan, CodeQL, Hypatia, documentation lint,
+  lock sync, and governance checks that already passed in that CI run.
+
+*Outputs:* a maintainer-approved repository-role decision, a check-by-check
+baseline table with log links and reproduction status, and any narrowly scoped
+follow-up change. Update the baseline-hazards table above with observed facts.
+
+*Acceptance:* each failed check is either fixed at source and green on a fresh
+run, or explicitly documented as a known external/base blocker with owner and
+next action. Do not mark the PR/release gate green while a required check is
+failing or pending.
+
+*Stop conditions:* fixing a check requires renaming/removing template assets,
+changing canonical pins, modifying branch protection, or broad placeholder
+substitution without maintainer approval. Request that decision rather than
+bypassing the check.
 
 === WP-00 — Select target, owners, and assurance boundary
 
@@ -523,6 +611,9 @@ acceptance evidence above.
   non-proof status.
 * [x] Preflight tests cover blocked state, bad arguments, and duplicate lock
   rows.
+* [x] First PR's four failed CI steps and local placeholder reproduction
+  recorded as baseline hazards; root-cause triage remains open.
+* [ ] WP-00A repository role and baseline CI failures reconciled.
 * [ ] WP-00 target/runtime, canonical-source locations, and ECHIDNA interface
   approved.
 * [ ] WP-01 toolchain and canonical artifacts independently pinned.
@@ -537,20 +628,23 @@ acceptance evidence above.
 
 == First five actions
 
-. **Maintainer:** decide WP-00 target and name the canonical source locations
-  and ECHIDNA owner/interface. This is the only step that should not be guessed
-  by a coding agent.
+. **Maintainer / CI owner:** resolve WP-00A: decide whether this checkout is a
+  template or Bactrian product, then reproduce and classify the four failed
+  checks. Do not bulk-substitute placeholders or alter canonical pins before
+  that decision.
+. **Maintainer / formal-methods owner:** decide WP-00 target and name the
+  canonical source locations and ECHIDNA owner/interface. This is the only
+  step that should not be guessed by a coding agent.
 . **Build/tooling contributor:** install and pin the OCaml compiler and Dune in
   the sanctioned provisioning setup; add a minimal project and prove that an
   empty `@verify` alias fails, while `@preflight` reports tools correctly.
 . **Formal-methods contributor:** inspect and record actual exported theorem
   signatures for the first Layer A authority path and define an artifact
   verification test. Do not reprove Agda results.
-. **OCaml contributor:** implement one compiler-libs AST adapter and a tiny
-  positive/negative firewall fixture pair under the chosen compiler version.
 . **Integration contributor:** define ECHIDNA's actual request/receipt schema
   and validate an invalid witness rejection before investing in a wider VC
-  translator.
+  translator. Coordinate with the OCaml contributor on WP-04 after WP-00A and
+  WP-00 are resolved.
 
 After these five actions, update the active checklist from observed evidence,
 not from elapsed effort. Continue in dependency order; stop at any missing
