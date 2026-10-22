@@ -6,6 +6,7 @@
 # programs and never emits a proof receipt.
 set -u
 
+# Write command usage and preflight exit-status help to stdout.
 usage() {
   cat <<'EOF'
 Usage: scripts/bactrian/doctor.sh [--help]
@@ -25,7 +26,9 @@ esac
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 blockers=0
 
+# Print $1 as a ready item to stdout.
 ok() { printf '  [ready]   %s\n' "$1"; }
+# Print $1 as a blocked item to stdout and increment the global blockers count.
 missing() { printf '  [blocked] %s\n' "$1"; blockers=$((blockers + 1)); }
 
 printf 'Bactrian MVP preflight (not a proof check)\n'
