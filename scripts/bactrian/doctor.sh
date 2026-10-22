@@ -69,10 +69,20 @@ else
     expected["$name"]=0
   done
   malformed=0
-  while IFS=$'\t' read -r name revision digest extra || [[ -n "${name-}${revision-}${digest-}${extra-}" ]]; do
-    [[ -z "${name-}" || "$name" == \#* ]] && continue
-    if [[ -z "${revision-}" || -z "${digest-}" || -n "${extra-}" || ! ${expected["${name-}"]+present} ]]; then
-      printf '  [blocked] malformed or unexpected lock row: %s\n' "${name-<empty>}"
+  # Match the raw row: tab is IFS whitespace, so read would collapse empty columns.
+  row_pattern=$'^([^\t]+)\t([^\t]+)\t([^\t]+)$'
+  while IFS= read -r row || [[ -n "$row" ]]; do
+    [[ -z "$row" || "$row" == \#* ]] && continue
+    if [[ ! "$row" =~ $row_pattern ]]; then
+      printf '  [blocked] malformed lock row (expected three nonempty TSV fields)\n'
+      malformed=1
+      continue
+    fi
+    name=${BASH_REMATCH[1]}
+    revision=${BASH_REMATCH[2]}
+    digest=${BASH_REMATCH[3]}
+    if [[ ! ${expected["$name"]+present} ]]; then
+      printf '  [blocked] unexpected lock authority: %s\n' "$name"
       malformed=1
       continue
     fi
@@ -102,12 +112,15 @@ else
   fi
 fi
 
-printf '\nImplementation scaffold:\n'
-for path in dune-project src/ppx/dune src/driver/dune; do
-  if [[ -f "$ROOT/$path" ]]; then
-    ok "$path present"
+printf '\nImplementation prerequisites (nonempty files only):\n'
+for path in dune-project src/ppx/dune src/driver/dune \
+  src/core/ir.ml src/ppx/firewall.ml src/frontend/typed_ast.ml \
+  src/why3/translate.ml src/actors/protocol.ml src/abi/manifest.ml \
+  src/driver/status.ml; do
+  if [[ -f "$ROOT/$path" && -s "$ROOT/$path" ]]; then
+    ok "$path present and nonempty"
   else
-    missing "$path absent (compiler/verifier integration not implemented)"
+    missing "$path absent or empty (compiler/verifier integration not implemented)"
   fi
 done
 

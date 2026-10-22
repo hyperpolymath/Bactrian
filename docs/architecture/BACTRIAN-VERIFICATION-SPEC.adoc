@@ -421,13 +421,14 @@ external hash_and_drift : bytes -> int64 -> (int64 * int64)
   = "caml_bactrian_hash_and_drift"
 
 let[@pre old.version >= 0L]
-   [@post fun next -> next.version = old.version + 1L]
-   [@post fun next -> next.id = old.id]
+   [@post function Ok next -> next.version = Int64.add old.version 1L
+                 | Error _ -> true]
+   [@post function Ok next -> next.id = old.id | Error _ -> true]
    next_entity old payload =
   [%cap pure]
   let (digest, drift) = hash_and_drift payload old.digest in
   if drift < 0L then Error `Invalid_drift
-  else Ok { old with version = old.version + 1L; digest }
+  else Ok { old with version = Int64.add old.version 1L; digest }
 
 [%bactrian.choreography
   roles (client, entity_store);
@@ -437,8 +438,10 @@ let[@pre old.version >= 0L]
     client -> entity_store : Apply(request_id, expected, payload);
     entity_store: receive Apply(id, expected, payload);
     entity_store: if expected = state.version then
-                    commit(next_entity(state, payload));
-                    send client : Committed(id, state.version, state.digest)
+                    match next_entity(state, payload) with
+                    | Error _ -> send client : Rejected(id, state.version)
+                    | Ok next -> commit(next);
+                                 send client : Committed(id, next.version, next.digest)
                   else send client : Rejected(id, state.version);
     client: only Committed(id, v, d) causally following Apply(id, ...)
             establishes acknowledged_commit(id, v, d);
