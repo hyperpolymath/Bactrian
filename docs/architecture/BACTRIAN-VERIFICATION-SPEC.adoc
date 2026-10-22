@@ -1,0 +1,618 @@
+// SPDX-License-Identifier: CC-BY-SA-4.0
+// Copyright (c) 2026 Jonathan D.A. Jewell (hyperpolymath)
+= Bactrian: Architecture, Soundness Contract, and MVP Roadmap
+:toc:
+:toclevels: 3
+
+== Status and scope
+
+This is the proposed architecture and implementation contract for Bactrian, a
+verification suite for a deliberately restricted OCaml subset and OCaml code
+that participates in BEAM-style actor protocols. It is not a claim that this
+checkout already contains a working verifier or that the external estate
+libraries named here have been vendored, built, or audited in this repository.
+The current checkout contains Idris2 ABI scaffolding under
+`src/interface/Abi/` and Zig build scaffolding, not a Bactrian PPX, Why3
+translator, Apalache adapter, ECHIDNA client, or proof receipt verifier.
+
+The design treats the named canonical Agda developments as upstream authorities
+and consumes version-pinned artifacts from them. Bactrian MUST NOT fork or
+silently restate their theorems. Integration becomes supported only when a
+manifest pins each upstream commit, module/theorem name, artifact digest, and
+checker version, and the CI gate verifies that manifest against the actual
+artifacts. In particular, no local status document or PPX annotation by itself
+constitutes a proof.
+
+== Goals and trust boundary
+
+Bactrian accepts source plus its complete preprocessing environment, compiles a
+small, explicit language into a shared Idris2 Core Spec IR, and routes proof
+obligations to the checker suited to each layer. The acceptance result is a
+machine-readable proof bundle that links source spans and normalized-AST hashes
+to obligations, solver/model-checker outputs, strict Dedukti witnesses, and the
+final ECHIDNA receipt.
+
+The top-level judgment is intentionally layered:
+
+[source,text]
+----
+Source --PPX firewall--> Normalized AST --elaboration--> Core Spec IR
+  Layer A: IR functional fragment --Why3/SMT--> strict .dk witness
+  Layer B: IR process protocol --K-CUT + Apalache--> strict .dk witness
+  Layer C: ABI manifest + Zig implementation --Idris2 QTT/ZigProve--> .dk witness
+                    all witnesses --> ECHIDNA --> COMPLETE Receipt
+----
+
+Why3/SMT, Apalache, ZigProve, and local checks can produce evidence for a
+candidate obligation, but they do not independently issue a COMPLETE result.
+ECHIDNA's strict Dedukti check and batch Coq + Lean validation are the closure
+boundary. Before that closure, the result is at most an INCOMPLETE Warrant.
+Missing evidence, timeout, unsupported syntax, stale artifact, or disagreement
+is a hard failure or an explicitly incomplete result, never a green proof.
+
+=== Three verification layers
+
+[cols="1,2,3,3",options="header"]
+|===
+| Layer | Subject | Main engines | Soundness claim (conditional on checked artifacts)
+
+| A — Sequential functional OCaml subset
+| Pure, total functions over supported ADTs and immutable values.
+| OCaml compiler-libs AST gate; Why3 VC generation; SMT; strict `.dk` witness.
+| Functional contracts hold for all values in the modeled domain. No claim
+about effects, runtime scheduling, or code outside the accepted AST.
+
+| B — Actor, mailbox, and protocol layer
+| State machines, sends/receives, crashes, bounded queues, and causal reply
+protocols.
+| `choreographic-types` K-CUT artifacts; Apalache bounded model checking;
+Why3 where applicable; strict `.dk` witnesses.
+| The modeled protocol respects its safety properties within the declared
+fault and queue assumptions. Bounded checking alone is not an unbounded proof.
+
+| C — OCaml / Idris2 ABI / Zig foreign boundary
+| C ABI signatures, ownership, roots/handles, layouts, and bounded native work.
+| Idris2 `%default total` QTT specification; ZigProve; `tropical-types`
+MaxPlus bounds; runtime adapter checks; ECHIDNA closure.
+| The exact imported implementation satisfies the pinned ABI contract and
+budget assumptions. No unverified FFI, runtime version, or binary substitution.
+|===
+
+== Existing tooling contrast
+
+Bactrian complements rather than replaces OCaml's type system and testing.
+
+* OCaml's standard type system, including GADTs and extensible type-indexed
+  encodings, establishes typing properties. It does not generally prove
+  functional postconditions, total termination, distributed causal knowledge,
+  mailbox bounds, or properties of a C/Zig implementation.
+* `ppx_assert` and `ppx_inline_test` provide executable assertions and inline
+  tests. They observe selected executions; they are not universal proofs and
+  do not close a foreign ABI proof.
+* `qcheck` and `crowbar` provide property-based testing and fuzzing. These are
+  valuable counterexample finders and remain complementary, but finite runs do
+  not establish universal correctness or K-CUT knowledge claims.
+* Infer and SLAM are static-analysis approaches for finding classes of bugs
+  (with capabilities depending on frontend, configuration, and analysis).
+  Bactrian's distinction is an explicit restricted source semantics, named
+  proof obligations, imported proof witnesses, and an end-to-end checked
+  receipt—not a claim that those analyzers are ineffective or subsumed.
+
+The recommended development loop uses all of them: prove what is in scope,
+run tests and fuzzers for implementation defects, and require the proof gate to
+reject unsupported or unproved code.
+
+== Layer A — sequential functional subset
+
+=== Accepted language
+
+The initial subset is intentionally smaller than OCaml. The PPX operates on the
+compiler-libs parsed and typed AST for one pinned OCaml compiler version; the
+compiler version, PPX versions, command line, include paths, generated source,
+and dependency interface hashes are part of the proof input.
+
+Accepted constructs in MVP:
+
+* algebraic data type declarations with finite, explicitly declared
+  constructors, including parameterized ADTs supported by the IR;
+* exhaustive pattern matching over those ADTs and supported primitive values;
+* immutable tuples, records, lists, and explicitly modeled persistent maps;
+* `let` bindings, pure function application, and a small total primitive set
+  (integer arithmetic with explicit mathematical or checked machine semantics,
+  structural equality on supported types, and pure constructor operations);
+* structurally recursive functions, or functions with an explicit natural
+  measure and a discharged well-founded decrease proof;
+* pure helper functions whose complete transitive call graph is also accepted.
+
+Rejected unless separately modeled and proved: mutation and references, arrays,
+exceptions as control flow, lazy values, objects, first-class modules, dynamic
+loading, callbacks into unverified code, threads/domains, polymorphic
+comparison/hash, native integers with unspecified overflow semantics, and all
+ambient effects. Unsupported constructs fail closed; the PPX does not erase
+them or approximate them.
+
+A totality check is not a syntax heuristic. Recursive calls are extracted into
+termination VCs and discharged by Why3/SMT or a checked proof. Structural
+recursion is accepted only when the recursive argument is a strict subterm
+under the supported datatype semantics. The obligation records the measure and
+each recursive call site.
+
+=== Deterministic PPX expansion firewall
+
+The PPX gate runs before proof translation and after all user PPX expansion.
+It records a canonical serialization/hash of both the source and final AST,
+checks deterministic expansion (same pinned inputs produce the same output),
+and rejects an unknown or nondeterministic rewriter. A second audit of the
+post-expansion AST is mandatory: scanning source text alone is insufficient.
+The allowlist is semantic and node-based, not a list of suspicious spellings.
+
+The gate rejects, at minimum:
+
+* `Obj.magic`, `Obj` representation access, unsafe casts, and any identifier
+  or module under the configured `Unsafe_*` namespace family;
+* `Sys.command`, `Unix.system`, process spawning, shell execution, and file,
+  system, port, or ambient process APIs not represented by an explicit
+  capability in the verified model;
+* `external` declarations, `[%raw ...]`, Ctypes/dynamic symbols, and all FFI
+  bindings without an exact Layer C ABI manifest and receipt;
+* unexpanded extensions, generated code without provenance, unknown PPX
+  rewriters, and compiler-libs nodes outside the versioned allowlist.
+
+Name resolution is performed on typed identifiers, including aliases and
+module opens. The firewall also checks the transitive implementation/interface
+closure: renaming `Sys.command` or hiding it behind a local module cannot
+bypass the rule. Capability policy imports MPR's capability-footprint Sigma;
+ambient `File`, `System`, `Port`, and `Sys.command` authority is denied unless
+an explicitly modeled capability is present. Layer A's initial profile grants
+none.
+
+=== Contracts and Face annotation surface
+
+The public contract surface is a PPX syntax that elaborates, rather than
+executes. Expressions inside contracts belong to a restricted, pure logic
+fragment with no effects and no unbounded quantification unsupported by the
+backend. Logical values are translated to shared Core Spec IR, not evaluated
+as OCaml callbacks.
+
+[source,ocaml]
+----
+let[@pre x >= 0]
+   [@post fun result -> result >= 0]
+   normalize x =
+  [%cap pure]
+  if x = 0 then 0 else x
+----
+
+`[%cap ...]` declares the required capability footprint. `[@pre ...]` and
+`[@post ...]` attach precondition and postcondition predicates to the nearest
+function/value declaration. `[@secret ...]` labels data with its confidentiality
+class and source for the TINI policy. The choreography extension is written in
+source documentation as `[%\@choreography ...]` to make the intended Face
+marker unambiguous; because `@` is not a valid OCaml extension-name character,
+the concrete MVP parser spelling is `[%bactrian.choreography ...]`. A frontend
+may reserve the former notation for a future lexer/parser, but must not claim it
+is accepted by stock OCaml syntax.
+
+[source,ocaml]
+----
+let[@pre delta >= 0]
+   [@post fun next -> next.version = state.version + 1]
+   apply_delta state delta =
+  [%cap pure]
+  { state with value = state.value + delta;
+               version = state.version + 1 }
+----
+
+Contract elaboration generates obligations for precondition well-formedness,
+postcondition under precondition, termination, arithmetic semantics, and
+capability non-escalation. Secret labels flow into TINI obligations. Composite
+capabilities are checked with the canonical `secret-types` MPR R5 composition
+rule so separate `fs.read` and `net.send` components cannot be composed into an
+unapproved exfiltration corridor.
+
+=== Core Spec IR
+
+All three frontends elaborate to one versioned, typed IR. The minimum schema is:
+
+[source,text]
+----
+Module(hash, compiler, ppx_chain, imports, declarations)
+Decl(name, type, body, requires, ensures, decreases, capabilities, labels, span)
+Expr = Var | Literal | Construct | Match | Let | Apply | PurePrim
+Protocol = Role | State | Send | Receive | Timeout | Crash | Monitor | Choice
+Foreign = AbiSymbol | IdrisTypeHash | ZigSourceHash | Layout | Ownership | Budget
+Obligation(id, kind, formula, assumptions, source_map, provenance)
+----
+
+IR versions are immutable and hashed. Each obligation includes an explicit
+assumption set, including integer model, mailbox/failure bounds, runtime ABI,
+compiler and imported theorem digests. A proof without the matching assumption
+and source hashes is invalid. Source maps preserve PPX expansion origins to the
+user-authored location and generated node.
+
+== Layer B — actor protocols, mailboxes, and K-CUT
+
+=== Process transition model
+
+A process is modeled as `(pid, local_state, mailbox, status, links, monitors)`.
+A transition is one of local pure state reduction, enqueue/send, dequeue/receive,
+link or monitor update, timeout, crash, or restart. The scheduler is an explicit
+transition relation; it does not assume FIFO across independent senders unless
+the selected transport contract establishes that property. Per-sender ordering,
+if guaranteed by the target runtime, is stated as an assumption and checked by
+the adapter conformance tests.
+
+Mailboxes use selective receive: a receive transition scans for the first
+message matching the source pattern and leaves unmatched messages queued. The
+model records queue length and scan work separately. `occupancy-types` supplies
+the canonical high-water-mark (HWM) queue bound. Every protocol must declare
+its bound, enqueue/dequeue policy, overflow response, and whether queue capacity
+is static, token-bucket bounded, or conditional on an arrival/service curve.
+Unbounded arrival rates cannot be waved away by a finite Apalache bound.
+
+The model includes links (coupled exit/crash propagation when configured),
+monitors (one-way termination notification), and explicit `DOWN`/exit
+messages. A link or monitor is not a message acknowledgement and provides no
+proof that a remote state transition committed. Crashes may occur between
+receive, local state update, send, and persistence points; each is a separate
+transition where relevant.
+
+=== Loss, reordering, and proof meaning
+
+Transport assumptions are protocol parameters, not implicit truths. The
+fault model may allow loss, duplication, delay, and reordering, constrained only
+by the specified delivery assumptions. Messages in flight are represented in
+the global state, so asynchronous cut reasoning includes messages not yet
+received. For permitted loss, a liveness theorem needs an explicit fairness,
+retry, or failure-detection assumption; safety cannot infer eventual delivery.
+
+Bactrian imports `choreographic-types` rather than reconstructing its
+`K-CUT-LOSS` and `K-CUT-WARRANT` results. K-CUT-LOSS tracks structured loss
+residues for synchronous and asynchronous cuts, including in-flight messages.
+K-CUT-WARRANT bounds what each role can know at a Kripke cut. The checker emits
+an obligation that connects every generated protocol transition and cut to the
+pinned canonical theorem interfaces and records the loss residue in the proof
+bundle. `echo-types` and `epistemic-types` `ProofTransport` certificates carry
+proof provenance across adapters; transport does not strengthen the theorem.
+
+==== Mandatory causal-reply rule
+
+The confirmed async falsifier is a hard elaboration rule: **a successful
+asynchronous send does not establish that the receiver has received, applied,
+or committed the requested state.** No contract, postcondition, or generated
+knowledge claim may assert remote commitment on the basis of `send` return,
+queue acceptance, a link, a monitor, or a timeout.
+
+The only supported commitment claim requires a verified causal path: the sender
+issues a request with an identity; the receiver validates and commits it under
+the modeled transition semantics; and a reply causally dependent on that commit
+is delivered back to the sender. The reply carries enough correlation/version
+information to rule out stale acknowledgements. Under message loss, the sender
+may remain uncertain forever; the spec may state eventual acknowledgement only
+with explicit delivery/fairness assumptions. A timeout or `DOWN` indicates
+uncertainty/failure, never successful commit. The elaborator rejects a
+`remote_committed` claim lacking this send -> receive -> commit -> causal reply
+chain, even if bounded model checking happens not to find a counterexample.
+
+=== Apalache obligations
+
+Apalache checks finite instances of the transition system over declared bounds:
+roles, message identities, state domains, queue HWM, and step depth. The report
+contains the exact bound tuple, invariants, counterexample traces, and tool
+version. For bounded safety, a complete search without counterexample means
+only “no counterexample within these bounds”; it is not an unbounded proof.
+
+Promotion to a proof obligation requires one of: (a) a canonical Agda theorem
+that covers the model by a checked refinement relation, or (b) an explicit
+inductive invariant/abstraction proof whose obligations close in the proof
+chain. Otherwise the result stays bounded evidence and the ECHIDNA bundle must
+mark it incomplete. Liveness requires a fairness declaration and a proof
+appropriate to it; finite bounded exploration alone cannot certify liveness.
+
+== Layer C — Idris2 and Zig verified foreign boundary
+
+=== Exact symbol import and proof chain
+
+Every OCaml external is generated from a single versioned ABI manifest. The
+manifest binds the OCaml declaration and C symbol to: an Idris2 `%default
+total` QTT signature; C widths, alignment, calling convention and ownership;
+Zig implementation source and build hashes; the ZigProve theorem/receipt; and
+the exported linker symbol. The OCaml PPX refuses handwritten or mismatched
+`external` declarations. Build output embeds the manifest digest, and link-time
+verification checks the resolved library digest/symbol table.
+
+The intended chain is:
+
+[source,text]
+----
+OCaml external + wrapper
+   == exact signature/layout ==>
+Idris2 Core Spec (QTT, total, ownership and pre/postconditions)
+   == implementation correspondence ==>
+Zig function + ZigProve Receipt
+   == MaxPlus cost proof ==>
+tropical-types bound + scheduler adapter policy
+   == all evidence imported ==>
+ECHIDNA INCOMPLETE Warrant -> Coq + Lean batch -> COMPLETE Receipt
+----
+
+A file named `Receipt` is not trusted by filename. The verifier validates
+issuer, theorem identity, source/build hashes, assumptions, and checker results.
+If the estate's actual ZigProve output format lacks an implementation
+correspondence or runtime-bound theorem, that theorem is a stated MVP blocker;
+Bactrian must not synthesize the missing guarantee.
+
+=== Heap, roots, custom handles, and linearity
+
+The desired safety theorem is that the foreign function cannot corrupt the OCaml
+GC heap and cannot retain or dereference an invalid OCaml value. The proof is
+conditional on a pinned OCaml runtime ABI and a wrapper discipline:
+
+* OCaml values crossing into C are rooted using the runtime's supported root
+  macros/registration protocol for the entire interval in which they may move
+  or be collected. A raw `value` is not retained across an allocation or
+  callback unless rooted according to that runtime version.
+* Foreign code does not inspect or mutate OCaml heap blocks directly, fabricate
+  tagged values, or retain unrooted pointers into the moving/collectable heap.
+  It operates on copied, validated unboxed data or opaque handles.
+* Custom blocks and handles have an explicit state machine. A linear resource
+  token permits exactly one reserve/acquire and one release/finalize; aliasing,
+  double free, use-after-release, and finalizer races are excluded by the Idris2
+  QTT interface and Zig implementation proof.
+* `caml_reserve_custom` is treated as a requested runtime adapter operation,
+  not assumed to be a portable public OCaml API. Bactrian must implement and
+  verify a version-specific adapter against the actual target runtime API. Its
+  reservation token is linear, and allocation failure/GC/exception paths must
+  return or release the reservation exactly once.
+* C entry points use the pinned runtime's required exception/root protocol
+  (for example, the appropriate `CAMLparam`/`CAMLlocal`/`CAMLreturn` discipline
+  where applicable). No OCaml exception or non-local exit may cross an
+  unprepared Zig frame.
+
+The proof obligation includes every success, error, allocation-failure,
+exception, cancellation, and finalizer path. “Zig is memory-safe” is not itself
+a proof about OCaml GC integration; the correspondence proof covers the actual
+C ABI wrapper and runtime adapter as well as the Zig body.
+
+=== MaxPlus and scheduler budget
+
+`tropical-types` `MaxPlus` analysis supplies a compositional worst-case cost
+bound. The imported primitive theorem must connect the verified Zig C-ABI
+primitive's cost to the target runtime's unit and assumptions. The requested
+scheduler/preemption slice target is at most 1 ms. A native call is admitted on
+the scheduler thread only if its proven upper bound, including wrapper and
+marshalling overhead, is no greater than the conservative budget available
+within that slice.
+
+A MaxPlus bound measured in instructions, cycles, or abstract steps does not
+automatically imply milliseconds. The target CPU, compiler flags, frequency
+assumptions, cache/memory behavior, and cost-to-time calibration must be
+explicitly justified and pinned. If those assumptions do not yield a sound
+`<= 1 ms` bound, synchronous admission is forbidden. The generated wrapper
+must dispatch the operation to a verified non-blocking continuation or a
+managed worker/thread and return control to the scheduler; the worker's own
+lifetime, cancellation, and callback protocol remain modeled obligations.
+
+Runtime monitoring can enforce a deadline by yielding/cancelling where safe,
+but measurement is not a substitute for a WCET proof. For an operation that
+cannot safely yield, only a sound static bound below the threshold permits
+scheduler-thread execution. This ties `tropical-types` evidence to runtime
+liveness without claiming that a mathematical cost bound alone proves system
+liveness.
+
+== Worked dual example: VeriSimDB entity actor
+
+The following is design-level source: `[%bactrian.choreography ...]` and
+contract attributes are proposed PPX syntax, not compilable stock OCaml today.
+The example separates a pure entity transition (Layer A), its acknowledgement
+protocol (Layer B), and hash/drift FFI (Layer C).
+
+[source,ocaml]
+----
+type entity = { id : int64; version : int64; digest : int64 }
+type request = Update of { request_id : int64; expected : int64; payload : bytes }
+type reply = Committed of { request_id : int64; version : int64; digest : int64 }
+           | Rejected of { request_id : int64; actual : int64 }
+type message = Apply of request | Result of reply
+
+(* This external is generated from the pinned ABI manifest; handwritten externals
+   are rejected. The opaque token owns copied bytes, never an OCaml heap pointer. *)
+external hash_and_drift : bytes -> int64 -> (int64 * int64)
+  = "caml_bactrian_hash_and_drift"
+
+let[@pre old.version >= 0L]
+   [@post fun next -> next.version = old.version + 1L]
+   [@post fun next -> next.id = old.id]
+   next_entity old payload =
+  [%cap pure]
+  let (digest, drift) = hash_and_drift payload old.digest in
+  if drift < 0L then Error `Invalid_drift
+  else Ok { old with version = old.version + 1L; digest }
+
+[%bactrian.choreography
+  roles (client, entity_store);
+  mailbox entity_store hwm 64 overflow reject_newest;
+  transport { loss = possible; duplicate = possible; reorder = possible };
+  protocol UpdateCommit =
+    client -> entity_store : Apply(request_id, expected, payload);
+    entity_store: receive Apply(id, expected, payload);
+    entity_store: if expected = state.version then
+                    commit(next_entity(state, payload));
+                    send client : Committed(id, state.version, state.digest)
+                  else send client : Rejected(id, state.version);
+    client: only Committed(id, v, d) causally following Apply(id, ...)
+            establishes acknowledged_commit(id, v, d);
+  crash_points after_receive, after_commit, before_reply, after_reply;
+]
+----
+
+Layer A proves the pure state transition's pre/postconditions and termination.
+In production, `bytes` must be replaced or refined to the exact immutable byte
+representation accepted by the sequential subset. The native hash/drift
+operation is not assumed pure merely because its OCaml declaration looks pure:
+its ABI contract asserts deterministic output for the copied input and prior
+digest, no retained OCaml pointers, bounded cost, and no hidden capabilities.
+
+Layer B checks all request/response interleavings within declared bounds. A
+client send or successful enqueue is only `submitted`; it is not
+`acknowledged_commit`. After `after_commit, before_reply`, the entity may have
+committed while the client remains uncertain. Retries use the same request ID
+and idempotency rule (or an explicit deduplication table with its own HWM bound)
+to avoid double application. The reply is correlated with the request and
+carries committed version/digest. If the reply is lost, the client retries or
+queries status; it never infers success from the original send.
+
+Layer C admits `hash_and_drift` on the scheduler thread only when the exact
+ZigProve artifact and MaxPlus bound include input-length-dependent cost and
+wrapper overhead and prove the configured `<= 1 ms` budget. If the input size
+or bound exceeds the threshold, the PPX-generated wrapper routes execution to
+the verified worker path or rejects the call. Idris2 proves the ABI type,
+integer range, ownership, and linear handle protocol; ZigProve proves the body
+and implementation correspondence; the runtime adapter proof establishes GC
+root/exception discipline for the pinned OCaml version.
+
+=== ECHIDNA mutation and vacuity gate
+
+For every nontrivial VC, `mutation.rs` performs a vacuity campaign before
+accepting the obligation set:
+
+. Check that each precondition is satisfiable under the declared type/domain
+  assumptions; report intentionally unreachable cases separately.
+. Mutate each postcondition (for example, `next.version = old.version + 1` to
+  `next.version = old.version`) and require the proof pipeline to produce a
+  counterexample or fail the mutated obligation. If the mutation still proves,
+  flag the contract as potentially vacuous, overconstrained, or disconnected
+  from the implementation.
+. Mutate the choreography by removing the causal reply and require the
+  remote-commit claim to be rejected by the syntactic/IR causal rule, not merely
+  pass a bounded trace search.
+. Mutate the ABI manifest (symbol, width, ownership, source hash) and require
+  the artifact-import gate to reject it.
+
+Mutation testing is evidence that gates are sensitive to selected defects; it
+is not a proof of completeness. Mutation seeds and outcomes are included in the
+ECHIDNA bundle. The VeriSimDB example cannot be marked complete if the
+`mutation.rs` vacuity check is skipped, unavailable, or reports an unexplained
+surviving mutation.
+
+== Dune engine and developer workflow
+
+The target user command is:
+
+[source,sh]
+----
+dune build @verify
+----
+
+The alias is a deterministic, fail-closed dependency graph, conceptually:
+
+. Parse and typecheck with the pinned OCaml compiler and deterministic PPX
+  chain; save source, dependency, toolchain, and normalized-AST hashes.
+. Run the post-expansion firewall and elaborate accepted units to Core Spec IR.
+. Dispatch Layer A VCs to Why3/SMT, then translate/check strict Dedukti
+  witnesses; retain solver versions, options, timeouts, and proof terms.
+. Dispatch Layer B transition systems to Apalache with explicit bounds; link
+  imported K-CUT/K-CUT-WARRANT artifacts and emit proof or bounded-evidence
+  status without promoting a bounded result to an unbounded theorem.
+. Dispatch Layer C manifests to Idris2 and ZigProve; check ABI/layout,
+  ownership, implementation correspondence, and MaxPlus budget.
+. Run ECHIDNA `mutation.rs` vacuity/mutation checks and proof-transport
+  validation.
+. Submit the complete obligation bundle to ECHIDNA. Local outcome is
+  `INCOMPLETE Warrant` until strict Dedukti plus batch Coq and Lean checks yield
+  a `COMPLETE Receipt`.
+
+Each task writes content-addressed outputs under Dune's build directory, never
+into source directories. Cache keys include all source/dependency hashes,
+compiler and tool versions, flags, IR version, canonical theorem manifest,
+solver/model bounds, and target ABI. Cache hits still validate artifact
+signatures and dependency digests. Any skipped engine, timeout, unknown
+obligation, or stale cache invalidates the final receipt. The alias reports
+separate `proved`, `bounded-only`, `failed`, and `incomplete` counts and exits
+nonzero unless policy permits the requested verification profile; CI release
+policy requires COMPLETE for all mandatory obligations.
+
+Proposed integration shape (not yet implemented): Dune rules invoke a single
+Bactrian driver with explicit targets for PPX validation, IR generation,
+Why3, Apalache, ABI verification, and ECHIDNA. The driver emits Dune
+`Dynamic` dependencies only from the locked manifest; it must not discover
+ambient tools or network dependencies at build time. Proof artifacts and
+third-party tools are pinned/available before the hermetic build starts.
+
+== MVP roadmap and acceptance gates
+
+[cols="1,2,3,2",options="header"]
+|===
+| Phase | Deliverables | Exit gate | Explicitly not claimed
+
+| 0. Trust inventory and manifests
+| Pin OCaml compiler/PPX behavior; define Core Spec IR schema; make manifests
+for MPR, choreography, secret, echo/epistemic, occupancy, tropical, ECHIDNA,
+Idris2, ZigProve and runtime adapter.
+| Reproducible manifest validation against upstream artifacts; fixture showing
+that stale or missing theorem digests fail closed.
+| No source verification yet.
+
+| 1. Layer A vertical slice
+| PPX firewall; ADT/immutable subset; contract parser; termination extraction;
+Why3 translation; strict `.dk` handoff; first `dune build @verify` alias.
+| Positive and negative fixtures; reject `Obj.magic`, `Unsafe_*`, `Sys.command`,
+unknown PPXs, unverified FFI; mutation test kills incorrect postcondition.
+| No effects, actors, or full OCaml support.
+
+| 2. Capabilities and information flow
+| MPR Sigma import; `[%cap]`, `[@secret]`; TINI obligations; R5 composition
+checks; ProofTransport provenance.
+| Tests prove ambient authority denied and exfiltration composition rejected;
+upstream theorem identities and hashes verified.
+| No claim beyond imported lattice and modeled capabilities.
+
+| 3. Layer B bounded actor model
+| Protocol Face syntax; process/mailbox/crash semantics; occupancy HWM;
+Apalache adapter; K-CUT loss and knowledge linkage.
+| Counterexample for lost reply after commit; mandatory rejection of commitment
+without causal reply; bounds and bounded-only labels are accurate.
+| Bounded Apalache result is not an unbounded theorem.
+
+| 4. Layer C ABI vertical slice
+| Idris2 QTT signature generator; pinned runtime adapter; ZigProve import;
+linear handles/roots; MaxPlus budget gate and worker fallback.
+| Deliberately corrupted layout/ownership/source-hash fixtures rejected;
+GC/exception path obligations close for a pinned runtime; 1 ms claim has
+traceable calibrated assumptions or is not admitted.
+| No portable guarantee across runtimes/architectures.
+
+| 5. ECHIDNA closure and release profile
+| Complete bundle export; `mutation.rs`; strict Dedukti; batch Coq + Lean;
+receipt validation; CI/release wiring.
+| `dune build @verify` yields COMPLETE on the curated suite; mutations are
+killed; clean rebuild reproduces hashes; any skipped checker fails the gate.
+| No soundness claim for unmodeled code or assumptions.
+|===
+
+=== MVP ordering and engineering rule
+
+Build one end-to-end example before broad language support. The first vertical
+slice should be a pure arithmetic/ADT transition plus a tiny causal request /
+reply actor protocol and one deterministic Zig primitive with a deliberately
+small bound. It should reach ECHIDNA closure before the implementation expands
+the AST, supported runtime versions, or failure model. When an upstream
+canonical package or checker is not available, create an explicit adapter
+interface and a failing fixture; do not replace the missing theorem with a
+local assertion or a prose “proof”.
+
+== Repository integration and immediate next actions
+
+This specification belongs under `docs/architecture/` and is the design
+baseline for implementation issues. The immediate code work is to establish
+locked source manifests and executable conformance fixtures, then implement
+Phase 0 and the Layer A vertical slice. Existing `src/interface/Abi/` files
+are useful scaffolding but are template artifacts: their simplified 64-bit
+layout/platform assumptions and sample pointer wrappers are not sufficient for
+the OCaml/BEAM target without a new, target-specific proof and runtime adapter.
+
+No BeAM runtime property is inferred from an OCaml-native target. The initial
+MVP should name its target precisely (OCaml native process participating in a
+BEAM node, or a particular OCaml-on-BEAM runtime). Actor semantics, scheduler
+budget units, mailbox behavior, GC rules, and ABI are backend-specific and
+must be supplied by that target's adapter manifest before claiming verification.

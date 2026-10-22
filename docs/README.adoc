@@ -13,6 +13,7 @@ and CI fails if it goes stale, so prefer it over any hand-written listing.
 * link:onboarding/QUICKSTART-MAINTAINER.adoc[QUICKSTART-MAINTAINER] — maintaining one.
 * link:AI_INSTALLATION_GUIDE.adoc[AI_INSTALLATION_GUIDE] — for an AI agent instantiating the template.
 * link:EXPLAINME.adoc[EXPLAINME] — how the pieces actually work.
+* link:status/BACTRIAN-ULTRAPLAN.adoc[Bactrian Ultra-Plan] — task-by-task implementation handoff, dependencies, acceptance evidence, and contributor rules.
 
 == The tracks
 
